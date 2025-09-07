@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phuket Places: A Learning App</title>
+    <title>Phuket Places: A Multiplayer Learning App</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
@@ -79,8 +79,9 @@
     <div class="container">
         <h1 class="text-3xl md:text-4xl font-extrabold text-gray-900 mb-6">Guess the Place</h1>
         
+        <!-- Added onerror attribute to provide a fallback image if the main image fails to load. -->
         <div class="image-container mb-6">
-            <img id="location-image" src="" alt="Location image">
+            <img id="location-image" src="" alt="Location image" onerror="this.onerror=null; this.src='https://placehold.co/600x400/cccccc/000000?text=Image+Not+Found';">
         </div>
 
         <p class="text-lg text-gray-700 mb-6" id="question-text">Where is this place?</p>
@@ -122,315 +123,391 @@
                 </div>
             </div>
         </div>
+
+        <p id="user-id-display" class="mt-4 text-xs text-gray-400"></p>
         
     </div>
 
-    <script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, orderBy, limit, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
         const API_KEY = ""; // Leave this empty, it will be provided by the runtime
         const GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
         const TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${API_KEY}`;
 
-        const noSupportMessage = document.createElement('p');
-        noSupportMessage.textContent = 'Your browser does not support Speech Recognition. Please use Google Chrome or Microsoft Edge.';
-        noSupportMessage.className = 'text-red-500 mt-4';
+        // Global variables for Firebase configuration, provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const authToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // Check for Web Speech API support
-        if (!('webkitSpeechRecognition' in window)) {
-            document.querySelector('.container').appendChild(noSupportMessage);
-        } else {
-            const recognition = new webkitSpeechRecognition();
-            recognition.continuous = false;
-            recognition.lang = 'en-US'; // Set language to English to handle various accents
-            recognition.interimResults = false;
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
 
-            const questions = [
-                {
-                    image: "https://www.avistahideawayphuketresort.com/wp-content/uploads/sites/42/2023/05/26842616496_4630bcec3e_o.jpg",
-                    question: "This cape is one of the most famous sunset viewpoints in Phuket. What is its name?",
-                    correctAnswer: "Phromthep Cape"
-                },
-                {
-                    image: "https://www.thavornpalmbeach.com/upload/blog-files/1733914361.571.jpg",
-                    question: "Which popular beach is known for its vibrant nightlife?",
-                    correctAnswer: "Patong Beach"
-                },
-                {
-                    image: "https://media1.thrillophilia.com/filestore/086879l8unimke2ll4jgd6hxlabw_IC_3_42709949ff.jpg",
-                    question: "Where is this place?",
-                    correctAnswer: "Phuket Old Town"
-                },
-                {
-                    image: "https://upload.wikimedia.org/wikipedia/commons/5/56/The_Big_Buddha%2C_Phuket.jpg",
-                    question: "This large statue is located on Nakkerd Hill. What is it called?",
-                    correctAnswer: "Big Buddha"
-                },
-                {
-                    image: "https://cdn-634917f2c1ac189bf80b388b.closte.com/wp-content/uploads/2020/02/Untitled-1-1600x836.jpg",
-                    question: "This is one of the most important Buddhist temples in Phuket. What is its name?",
-                    correctAnswer: "Chalong Temple"
-                },
-                {
-                    image: "https://bydlofts.com/cdn-cgi/image/quality=80,format=auto,onerror=redirect,metadata=none/wp-content/uploads/2023/02/byd-lofts-phuket-chillva-market-in-phuket-3.jpg",
-                    question: "Which famous night market in Phuket is known for its container shops and bohemian vibe?",
-                    correctAnswer: "Chillva Night Market"
-                },
-                {
-                    image: "https://www.joeysantini.com/app/uploads/2017/09/IMG_5866-1.jpg",
-                    question: "This place offers a breathtaking panoramic view of the coastline and is a popular spot for hiking. What is it called?",
-                    correctAnswer: "Laem Krating"
-                }
-            ];
+        // UI elements
+        const speakBtn = document.getElementById('speak-btn');
+        const nextBtn = document.getElementById('next-btn');
+        const skipBtn = document.getElementById('skip-btn');
+        const locationImage = document.getElementById('location-image');
+        const transcriptText = document.getElementById('transcript-text');
+        const feedbackMessage = document.getElementById('feedback-message');
+        const questionText = document.getElementById('question-text');
+        const geminiInfoBtn = document.getElementById('gemini-info-btn');
+        const infoModal = document.getElementById('info-modal');
+        const modalTitle = document.getElementById('modal-title');
+        const modalContent = document.getElementById('modal-content');
+        const closeModalBtn = document.getElementById('close-modal-btn');
+        const readAloudBtn = document.getElementById('read-aloud-btn');
+        const userIdDisplay = document.getElementById('user-id-display');
 
-            let currentQuestionIndex = 0;
+        // Questions data with more reliable image URLs.
+        // Images are sourced from Wikimedia Commons and Pexels, which are generally more stable than random URLs.
+        const questions = [
+            {
+                image: "https://upload.wikimedia.org/wikipedia/commons/e/e6/Phromthep_Cape_Phuket_Thailand_01.jpg",
+                question: "This cape is one of the most famous sunset viewpoints in Phuket. What is its name?",
+                correctAnswer: "Phromthep Cape"
+            },
+            {
+                image: "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cf/Patong_Beach%2C_Phuket.jpg/1280px-Patong_Beach%2C_Phuket.jpg",
+                question: "Which popular beach is known for its vibrant nightlife?",
+                correctAnswer: "Patong Beach"
+            },
+            {
+                image: "https://upload.wikimedia.org/wikipedia/commons/f/f6/Phuket_Town_Old_Sino-Portuguese_building.jpg",
+                question: "Where is this place?",
+                correctAnswer: "Phuket Old Town"
+            },
+            {
+                image: "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Big_Buddha%2C_Phuket.jpg/1920px-Big_Buddha%2C_Phuket.jpg",
+                question: "This large statue is located on Nakkerd Hill. What is it called?",
+                correctAnswer: "Big Buddha"
+            },
+            {
+                image: "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e7/Wat_Chalong%2C_Phuket.jpg/1280px-Wat_Chalong%2C_Phuket.jpg",
+                question: "This is one of the most important Buddhist temples in Phuket. What is its name?",
+                correctAnswer: "Chalong Temple"
+            },
+            {
+                image: "https://upload.wikimedia.org/wikipedia/commons/2/2f/Chillva_Market_Phuket.jpg",
+                question: "Which famous night market in Phuket is known for its container shops and bohemian vibe?",
+                correctAnswer: "Chillva Night Market"
+            },
+            {
+                image: "https://images.pexels.com/photos/1018698/pexels-photo-1018698.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2",
+                question: "This place offers a breathtaking panoramic view of the coastline and is a popular spot for hiking. What is it called?",
+                correctAnswer: "Laem Krating"
+            }
+        ];
+        
+        // Multiplayer game state
+        let gameState = {
+            currentQuestionIndex: 0,
+            lastUpdatedBy: '',
+            lastFeedback: '',
+            lastCorrectAnswer: ''
+        };
 
-            const speakBtn = document.getElementById('speak-btn');
-            const nextBtn = document.getElementById('next-btn');
-            const skipBtn = document.getElementById('skip-btn');
-            const locationImage = document.getElementById('location-image');
-            const transcriptText = document.getElementById('transcript-text');
-            const feedbackMessage = document.getElementById('feedback-message');
-            const questionText = document.getElementById('question-text');
-            const geminiInfoBtn = document.getElementById('gemini-info-btn');
-            const infoModal = document.getElementById('info-modal');
-            const modalTitle = document.getElementById('modal-title');
-            const modalContent = document.getElementById('modal-content');
-            const closeModalBtn = document.getElementById('close-modal-btn');
-            const readAloudBtn = document.getElementById('read-aloud-btn');
+        // Paths for Firestore
+        const gameStateDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'phuket_game_state', 'game_state');
+        
+        // Function to show modal
+        function showModal(title, content) {
+            modalTitle.textContent = title;
+            modalContent.textContent = content;
+            infoModal.classList.remove('hidden');
+        }
 
-            // Function to show modal
-            function showModal(title, content) {
-                modalTitle.textContent = title;
-                modalContent.textContent = content;
-                infoModal.classList.remove('hidden');
+        // Function to close modal
+        closeModalBtn.addEventListener('click', () => {
+            infoModal.classList.add('hidden');
+        });
+        window.addEventListener('click', (event) => {
+            if (event.target === infoModal) {
+                infoModal.classList.add('hidden');
+            }
+        });
+
+        // A helper function for fuzzy string matching.
+        function isCloseMatch(input, target) {
+            const normalizedInput = input.trim().toLowerCase();
+            const normalizedTarget = target.trim().toLowerCase();
+
+            // Check for direct inclusion
+            if (normalizedInput.includes(normalizedTarget)) {
+                return true;
             }
 
-            // Function to close modal
-            closeModalBtn.addEventListener('click', () => {
-                infoModal.classList.add('hidden');
-            });
-            window.addEventListener('click', (event) => {
-                if (event.target === infoModal) {
-                    infoModal.classList.add('hidden');
-                }
-            });
+            // Check for phonetic similarities (very basic)
+            const phoneticMap = {
+                'chalong': ['chalong', 'chalang'],
+                'phromthep': ['promtep', 'phromthape'],
+                'buddha': ['buda', 'butha'],
+                'patong': ['patong'],
+                'old phuket town': ['old phuket town', 'old phuket'],
+                'chillva night market': ['chillva', 'chilwa', 'chillva market'],
+                'laem krating': ['laem krating', 'lame krating', 'laem krating']
+            };
 
-            // A helper function for fuzzy string matching.
-            function isCloseMatch(input, target) {
-                const normalizedInput = input.trim().toLowerCase();
-                const normalizedTarget = target.trim().toLowerCase();
-
-                // Check for direct inclusion
-                if (normalizedInput.includes(normalizedTarget)) {
-                    return true;
-                }
-
-                // Check for phonetic similarities (very basic)
-                const phoneticMap = {
-                    'chalong': ['chalong', 'chalang'],
-                    'phromthep': ['promtep', 'phromthape'],
-                    'buddha': ['buda', 'butha'],
-                    'patong': ['patong'],
-                    'old phuket town': ['old phuket town', 'old phuket'],
-                    'chillva night market': ['chillva', 'chilwa', 'chillva market'],
-                    'laem krating': ['laem krating', 'lame krating', 'laem krating']
-                };
-
-                for (const key in phoneticMap) {
-                    if (normalizedTarget.includes(key)) {
-                        for (const variant of phoneticMap[key]) {
-                            if (normalizedInput.includes(variant)) {
-                                return true;
-                            }
+            for (const key in phoneticMap) {
+                if (normalizedTarget.includes(key)) {
+                    for (const variant of phoneticMap[key]) {
+                        if (normalizedInput.includes(variant)) {
+                            return true;
                         }
                     }
                 }
-                return false;
             }
+            return false;
+        }
 
-            // --- Function to update UI with current question ---
-            function loadQuestion() {
-                const q = questions[currentQuestionIndex];
-                locationImage.src = q.image;
-                questionText.textContent = q.question;
-                transcriptText.textContent = 'Waiting for your answer...';
-                feedbackMessage.classList.remove('show', 'bg-green-500', 'bg-red-500');
-                speakBtn.style.display = 'block';
-                nextBtn.style.display = 'none';
-                skipBtn.style.display = 'block';
-                speakBtn.classList.remove('listening');
+        // --- Firebase setup and real-time updates ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                console.log("User signed in:", user.uid);
+                userIdDisplay.textContent = `User ID: ${user.uid}`;
+                
+                // Set up the real-time listener for the game state
+                onSnapshot(gameStateDocRef, (docSnapshot) => {
+                    if (docSnapshot.exists()) {
+                        gameState = docSnapshot.data();
+                        console.log("Game state updated:", gameState);
+                        // Update UI based on new game state
+                        const currentQuestion = questions[gameState.currentQuestionIndex];
+                        locationImage.src = currentQuestion.image;
+                        questionText.textContent = currentQuestion.question;
+                        
+                        // Display feedback from the last player
+                        if (gameState.lastFeedback) {
+                            feedbackMessage.textContent = gameState.lastFeedback;
+                            feedbackMessage.className = `feedback show ${gameState.lastFeedback.includes('Correct') ? 'bg-green-500' : 'bg-red-500'}`;
+                        } else {
+                            feedbackMessage.classList.remove('show', 'bg-green-500', 'bg-red-500');
+                        }
+
+                        // Display last answer transcript
+                        if (gameState.lastAnswer) {
+                            transcriptText.textContent = `You said: "${gameState.lastAnswer}" (from ${gameState.lastUpdatedBy})`;
+                        } else {
+                            transcriptText.textContent = 'Waiting for your answer...';
+                        }
+                        
+                    } else {
+                        // Game state document does not exist, initialize it
+                        console.log("Initializing new game state.");
+                        updateGameState({ currentQuestionIndex: 0, lastUpdatedBy: '', lastFeedback: '', lastAnswer: '' });
+                    }
+                });
+            } else {
+                console.log("No user signed in. Signing in anonymously...");
+                if (authToken) {
+                    await signInWithCustomToken(auth, authToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
             }
+        });
 
-            // --- Event listener for the Speak button ---
+        // Function to update the game state in Firestore
+        async function updateGameState(updates) {
+            try {
+                await setDoc(gameStateDocRef, updates, { merge: true });
+                console.log("Game state updated successfully!");
+            } catch (error) {
+                console.error("Error updating game state:", error);
+            }
+        }
+
+        // --- Function to update UI with current question ---
+        function loadNextQuestion() {
+            const nextIndex = (gameState.currentQuestionIndex + 1) % questions.length;
+            updateGameState({ 
+                currentQuestionIndex: nextIndex,
+                lastUpdatedBy: auth.currentUser.uid,
+                lastFeedback: '',
+                lastAnswer: ''
+            });
+        }
+
+        // --- Event listener for the Speak button ---
+        if ('webkitSpeechRecognition' in window) {
+            const recognition = new webkitSpeechRecognition();
+            recognition.continuous = false;
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+
             speakBtn.addEventListener('click', () => {
                 recognition.start();
                 transcriptText.textContent = 'Listening... Please say the answer.';
                 speakBtn.classList.add('listening');
             });
-            
-            // --- Event listener for the Skip button ---
-            skipBtn.addEventListener('click', () => {
-                currentQuestionIndex = (currentQuestionIndex + 1) % questions.length;
-                loadQuestion();
-            });
 
-            // --- Speech recognition result event ---
-            recognition.onresult = (event) => {
+            recognition.onresult = async (event) => {
                 const result = event.results[0][0].transcript;
-                const currentCorrectAnswer = questions[currentQuestionIndex].correctAnswer;
-
-                transcriptText.textContent = `You said: "${result}"`;
-
+                const currentCorrectAnswer = questions[gameState.currentQuestionIndex].correctAnswer;
+                
+                let newFeedback = '';
                 if (isCloseMatch(result, currentCorrectAnswer)) {
-                    feedbackMessage.textContent = 'Excellent! That is correct!';
-                    feedbackMessage.className = 'feedback show bg-green-500';
-                    nextBtn.style.display = 'block';
-                    speakBtn.style.display = 'none';
-                    skipBtn.style.display = 'none';
+                    newFeedback = 'Excellent! That is correct!';
                 } else {
-                    feedbackMessage.textContent = 'Not quite right. Please try again!';
-                    feedbackMessage.className = 'feedback show bg-red-500';
-                    speakBtn.style.display = 'block';
-                    skipBtn.style.display = 'block';
+                    newFeedback = 'Not quite right. Please try again!';
                 }
+
+                await updateGameState({
+                    lastAnswer: result,
+                    lastUpdatedBy: auth.currentUser.uid,
+                    lastFeedback: newFeedback
+                });
+
+                speakBtn.classList.remove('listening');
             };
             
-            // --- Speech recognition error event ---
             recognition.onerror = (event) => {
                 transcriptText.textContent = 'An error occurred with speech recognition: ' + event.error;
                 speakBtn.classList.remove('listening');
             };
-
-            // --- Next button event listener ---
-            nextBtn.addEventListener('click', () => {
-                currentQuestionIndex = (currentQuestionIndex + 1) % questions.length;
-                loadQuestion();
-            });
-
-            // --- Gemini API Call for more info ---
-            geminiInfoBtn.addEventListener('click', async () => {
-                const placeName = questions[currentQuestionIndex].correctAnswer;
-                showModal('Fetching Information...', 'Please wait...');
-                
-                const prompt = `Write a short description (about 2-3 sentences) about the place named "${placeName}" in English, suitable for primary school students. The description should be interesting and easy to understand.`;
-
-                const payload = {
-                    contents: [{ parts: [{ text: prompt }] }],
-                    tools: [{ "google_search": {} }],
-                    systemInstruction: {
-                        parts: [{ text: "You are a helpful teaching assistant specializing in history and landmarks." }]
-                    }
-                };
-
-                try {
-                    const response = await fetch(GENERATE_CONTENT_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (text) {
-                        modalTitle.textContent = `More Info About ${placeName}`;
-                        modalContent.textContent = text;
-                    } else {
-                        modalTitle.textContent = 'Error';
-                        modalContent.textContent = 'Unable to retrieve information at this time.';
-                    }
-                } catch (error) {
-                    modalTitle.textContent = 'Error';
-                    modalContent.textContent = 'An error occurred with the connection: ' + error.message;
-                }
-            });
-
-            // --- Gemini TTS API Call for text-to-speech ---
-            readAloudBtn.addEventListener('click', async () => {
-                const textToSpeak = questions[currentQuestionIndex].correctAnswer;
-                if (!textToSpeak) return;
-
-                const payload = {
-                    contents: [{ parts: [{ text: textToSpeak }] }],
-                    generationConfig: {
-                        responseModalities: ["AUDIO"],
-                        speechConfig: {
-                            voiceConfig: {
-                                prebuiltVoiceConfig: { voiceName: "Fenrir" }
-                            }
-                        }
-                    },
-                };
-                
-                try {
-                    const response = await fetch(TTS_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    const part = result?.candidates?.[0]?.content?.parts?.[0];
-                    const audioData = part?.inlineData?.data;
-                    const mimeType = part?.inlineData?.mimeType;
-
-                    if (audioData && mimeType && mimeType.startsWith("audio/")) {
-                        const base64ToArrayBuffer = (base64) => {
-                            const binaryString = atob(base64);
-                            const len = binaryString.length;
-                            const bytes = new Uint8Array(len);
-                            for (let i = 0; i < len; i++) {
-                                bytes[i] = binaryString.charCodeAt(i);
-                            }
-                            return bytes.buffer;
-                        };
-                        const pcmToWav = (pcm16, sampleRate) => {
-                            const dataLength = pcm16.length * 2;
-                            const buffer = new ArrayBuffer(44 + dataLength);
-                            const view = new DataView(buffer);
-                            
-                            // WAV header
-                            writeString(view, 0, 'RIFF');
-                            view.setUint32(4, 36 + dataLength, true);
-                            writeString(view, 8, 'WAVE');
-                            writeString(view, 12, 'fmt ');
-                            view.setUint32(16, 16, true);
-                            view.setUint16(20, 1, true); // PCM format
-                            view.setUint16(22, 1, true); // Number of channels
-                            view.setUint32(24, sampleRate, true);
-                            view.setUint32(28, sampleRate * 2, true);
-                            view.setUint16(32, 2, true);
-                            view.setUint16(34, 16, true);
-                            writeString(view, 36, 'data');
-                            view.setUint32(40, dataLength, true);
-                            
-                            // PCM data
-                            let offset = 44;
-                            for (let i = 0; i < pcm16.length; i++, offset += 2) {
-                                view.setInt16(offset, pcm16[i], true);
-                            }
-                            
-                            return new Blob([view], { type: 'audio/wav' });
-                        };
-                        const writeString = (view, offset, string) => {
-                            for (let i = 0; i < string.length; i++) {
-                                view.setUint8(offset + i, string.charCodeAt(i));
-                            }
-                        };
-                        const sampleRate = parseInt(mimeType.match(/rate=(\d+)/)[1], 10);
-                        const pcmData = base64ToArrayBuffer(audioData);
-                        const pcm16 = new Int16Array(pcmData);
-                        const wavBlob = pcmToWav(pcm16, sampleRate);
-                        const audioUrl = URL.createObjectURL(wavBlob);
-                        const audio = new Audio(audioUrl);
-                        audio.play();
-                    } else {
-                        console.error('Failed to get audio data.');
-                    }
-                } catch (error) {
-                    console.error('Error fetching audio:', error);
-                }
-            });
-
-            // --- Initial load ---
-            window.onload = loadQuestion;
+        } else {
+            const noSupportMessage = document.createElement('p');
+            noSupportMessage.textContent = 'Your browser does not support Speech Recognition. Please use Google Chrome or Microsoft Edge.';
+            noSupportMessage.className = 'text-red-500 mt-4';
+            document.querySelector('.container').appendChild(noSupportMessage);
         }
+
+        // --- Next button event listener ---
+        nextBtn.addEventListener('click', loadNextQuestion);
+        
+        // --- Skip button event listener ---
+        skipBtn.addEventListener('click', loadNextQuestion);
+
+        // --- Gemini API Call for more info ---
+        geminiInfoBtn.addEventListener('click', async () => {
+            const placeName = questions[gameState.currentQuestionIndex].correctAnswer;
+            showModal('Fetching Information...', 'Please wait...');
+            
+            const prompt = `Write a short description (about 2-3 sentences) about the place named "${placeName}" in English, suitable for primary school students. The description should be interesting and easy to understand.`;
+
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: "You are a helpful teaching assistant specializing in history and landmarks." }]
+                }
+            };
+
+            try {
+                const response = await fetch(GENERATE_CONTENT_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                    modalTitle.textContent = `More Info About ${placeName}`;
+                    modalContent.textContent = text;
+                } else {
+                    modalTitle.textContent = 'Error';
+                    modalContent.textContent = 'Unable to retrieve information at this time.';
+                }
+            } catch (error) {
+                modalTitle.textContent = 'Error';
+                modalContent.textContent = 'An error occurred with the connection: ' + error.message;
+            }
+        });
+
+        // --- Gemini TTS API Call for text-to-speech ---
+        readAloudBtn.addEventListener('click', async () => {
+            const textToSpeak = questions[gameState.currentQuestionIndex].correctAnswer;
+            if (!textToSpeak) return;
+
+            const payload = {
+                contents: [{ parts: [{ text: textToSpeak }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: "Fenrir" }
+                        }
+                    }
+                },
+            };
+            
+            try {
+                const response = await fetch(TTS_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                const part = result?.candidates?.[0]?.content?.parts?.[0];
+                const audioData = part?.inlineData?.data;
+                const mimeType = part?.inlineData?.mimeType;
+
+                if (audioData && mimeType && mimeType.startsWith("audio/")) {
+                    const base64ToArrayBuffer = (base64) => {
+                        const binaryString = atob(base64);
+                        const len = binaryString.length;
+                        const bytes = new Uint8Array(len);
+                        for (let i = 0; i < len; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        return bytes.buffer;
+                    };
+                    const pcmToWav = (pcm16, sampleRate) => {
+                        const dataLength = pcm16.length * 2;
+                        const buffer = new ArrayBuffer(44 + dataLength);
+                        const view = new DataView(buffer);
+                        
+                        // WAV header
+                        writeString(view, 0, 'RIFF');
+                        view.setUint32(4, 36 + dataLength, true);
+                        writeString(view, 8, 'WAVE');
+                        writeString(view, 12, 'fmt ');
+                        view.setUint32(16, 16, true);
+                        view.setUint16(20, 1, true); // PCM format
+                        view.setUint16(22, 1, true); // Number of channels
+                        view.setUint32(24, sampleRate, true);
+                        view.setUint32(28, sampleRate * 2, true);
+                        view.setUint16(32, 2, true);
+                        view.setUint16(34, 16, true);
+                        writeString(view, 36, 'data');
+                        view.setUint32(40, dataLength, true);
+                        
+                        // PCM data
+                        let offset = 44;
+                        for (let i = 0; i < pcm16.length; i++, offset += 2) {
+                            view.setInt16(offset, pcm16[i], true);
+                        }
+                        
+                        return new Blob([view], { type: 'audio/wav' });
+                    };
+                    const writeString = (view, offset, string) => {
+                        for (let i = 0; i < string.length; i++) {
+                            view.setUint8(offset + i, string.charCodeAt(i));
+                        }
+                    };
+                    const sampleRate = parseInt(mimeType.match(/rate=(\d+)/)[1], 10);
+                    const pcmData = base64ToArrayBuffer(audioData);
+                    const pcm16 = new Int16Array(pcmData);
+                    const wavBlob = pcmToWav(pcm16, sampleRate);
+                    const audioUrl = URL.createObjectURL(wavBlob);
+                    const audio = new Audio(audioUrl);
+                    audio.play();
+                } else {
+                    console.error('Failed to get audio data.');
+                }
+            } catch (error) {
+                console.error('Error fetching audio:', error);
+            }
+        });
+
+        // Initial load
+        window.onload = () => {
+             // onSnapshot will handle the first render after authentication
+        };
     </script>
 </body>
 </html>
