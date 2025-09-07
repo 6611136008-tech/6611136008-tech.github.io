@@ -130,10 +130,13 @@
         const GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
         const TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${API_KEY}`;
 
+        const noSupportMessage = document.createElement('p');
+        noSupportMessage.textContent = 'Your browser does not support Speech Recognition. Please use Google Chrome or Microsoft Edge.';
+        noSupportMessage.className = 'text-red-500 mt-4';
+
         // Check for Web Speech API support
         if (!('webkitSpeechRecognition' in window)) {
-            // Note: Use a modal/dialog instead of alert() in production
-            alert('Your browser does not support Speech Recognition. Please use Google Chrome or Microsoft Edge.');
+            document.querySelector('.container').appendChild(noSupportMessage);
         } else {
             const recognition = new webkitSpeechRecognition();
             recognition.continuous = false;
